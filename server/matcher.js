@@ -260,18 +260,16 @@ function matchMarkets(polymarkets, kalshiMarkets) {
       const pmTeams = pm.teams.map(normalizeTeamName);
       const kmTeams = km.teams.map(normalizeTeamName);
       const overlap = pmTeams.filter(t => kmTeams.includes(t)).length;
-      if (overlap === 0) {
-        // Try fuzzy question match
-        const pmWords = pm.question.toLowerCase().replace(/[^a-z0-9 ]/g, '').split(/\s+/).filter(w => w.length > 3);
-        const kmWords = km.title.toLowerCase().replace(/[^a-z0-9 ]/g, '').split(/\s+/).filter(w => w.length > 3);
-        const wordOverlap = pmWords.filter(w => kmWords.includes(w)).length;
-        if (wordOverlap < 2) continue;
-      }
-
-      // Require at least 2 team overlap or strong word overlap for a match
+      // Require at least 1 team match, prefer 2 for strong match
       if (overlap < 1) continue;
 
-      const score = overlap * 10 + (pm.league === km.league ? 5 : 0);
+      // Date proximity check — fixtures should be within 3 days of each other
+      const pmEnd = new Date(pm.endDate || '2099');
+      const kmEnd = new Date(km.closeTime || km.expectedExpiration || '2099');
+      const daysDiff = Math.abs(pmEnd - kmEnd) / 86400000;
+      if (daysDiff > 3) continue;
+
+      const score = overlap * 10 + (pm.league === km.league ? 5 : 0) + (daysDiff < 1 ? 3 : 0);
       if (score > bestScore && score >= 10) {
         bestScore = score;
         bestMatch = { index: i, market: km };

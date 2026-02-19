@@ -66,15 +66,6 @@ async function fetchPolymarketMarkets() {
     }
   }
 
-  // Also fetch via sports-skills for any we might have missed (futures, props)
-  const data = run('polymarket get_sports_markets --limit=100');
-  if (data?.markets) {
-    const existingIds = new Set(allMarkets.map(m => m.id));
-    for (const m of data.markets) {
-      if (!existingIds.has(m.id)) allMarkets.push(m);
-    }
-  }
-
   // Deduplicate by id
   const seen = new Set();
   const deduped = allMarkets.filter(m => {
@@ -83,8 +74,15 @@ async function fetchPolymarketMarkets() {
     return true;
   });
 
-  console.log(`[FETCH] Polymarket: ${deduped.length} markets (${types.length} fixture types + fallback)`);
-  return deduped;
+  // Filter to upcoming fixtures only (end date in the future)
+  const now = new Date();
+  const fixtures = deduped.filter(m => {
+    const end = new Date(m.end_date);
+    return end > now;
+  });
+
+  console.log(`[FETCH] Polymarket: ${fixtures.length} upcoming fixtures (from ${deduped.length} total)`);
+  return fixtures;
 }
 
 function parseOutcomes(m) {
@@ -113,12 +111,18 @@ function fetchPolymarketOrderBook(tokenId) {
 }
 
 // ─── Kalshi ─────────────────────────────────────────────────────────────
-// Known Kalshi sports series prefixes — faster than listing all series
-const KALSHI_SPORTS_TICKERS = [
-  'KXNBA', 'KXNFL', 'KXMLB', 'KXNHL', 'KXCBB', 'KXWNBA',
-  'KXEPL', 'KXLALIGA', 'KXSOCCER', 'KXMLS', 'KXUCL', 'KXBUNDESLIGA', 'KXSERIEA', 'KXLIGUE1',
-  'KXTENNIS', 'KXUFC', 'KXGOLF', 'KXPGA', 'KXNASCAR', 'KXF1',
-  'KXLALIGABTTS', 'KXEPLBTTS', 'KXSOCCERBTTS',
+// Kalshi game/fixture series only — excludes futures, awards, season totals
+const KALSHI_FIXTURE_TICKERS = [
+  'KXNCAAMBGAME', 'KXNCAAWBGAME', // college basketball games
+  'KXUEFAGAME', 'KXBRASILEIROGAME', // soccer games
+  'KXNHLTOTAL', 'KXNHLGAME', // NHL games
+  'KXNBAGAME', 'KXNBAPLAYERGAME', // NBA games
+  'KXNFLGAME', 'KXNFLPLAYERGAME', // NFL games
+  'KXMLBGAME', // MLB games
+  'KXLALIGABTTS', 'KXEPLBTTS', 'KXSOCCERBTTS', // soccer BTTS
+  'KXUCL16', 'KXUEL16', // Champions/Europa League fixtures
+  'KXUFCFIGHT', // UFC fights
+  'KXFIBACHAMPLEAGUEGAME', // FIBA games
 ];
 
 async function fetchKalshiSportsMarkets() {
@@ -127,32 +131,53 @@ async function fetchKalshiSportsMarkets() {
   let sportsSeries = [];
 
   if (seriesData?.series) {
-    sportsSeries = seriesData.series.filter(s =>
-      s.category === 'Sports' ||
-      (s.tags && s.tags.some(t => ['Soccer', 'Basketball', 'Football', 'Baseball', 'Hockey', 'Tennis', 'MMA', 'Golf', 'Racing'].includes(t))) ||
-      KALSHI_SPORTS_TICKERS.some(prefix => s.ticker.startsWith(prefix))
-    );
+    // Only match fixture/game series — look for "Game", "Fight", "BTTS", or known fixture tickers
+    sportsSeries = seriesData.series.filter(s => {
+      const ticker = s.ticker || '';
+      const title = (s.title || '').toLowerCase();
+      // Match known fixture tickers
+      if (KALSHI_FIXTURE_TICKERS.some(prefix => ticker.startsWith(prefix))) return true;
+      // Match series with "game", "fight", "match", "bout" in title
+      if (['game', 'fight', 'match', 'bout', 'btts', 'winner?'].some(kw => title.includes(kw))) return true;
+      // Match series with "custom" frequency + sports + "game" or team-related words in ticker
+      if (s.frequency === 'custom' && s.category === 'Sports' && /GAME|TOTAL|FIGHT|BTTS|ML$/i.test(ticker)) return true;
+      return false;
+    });
   } else {
-    // Fallback: try known tickers directly
-    sportsSeries = KALSHI_SPORTS_TICKERS.map(t => ({ ticker: t, tags: [] }));
+    sportsSeries = KALSHI_FIXTURE_TICKERS.map(t => ({ ticker: t, tags: [] }));
   }
 
-  console.log(`[FETCH] Kalshi: ${sportsSeries.length} sports series found`);
+  // Cap series and log
+  const capped = sportsSeries.slice(0, 50);
+  console.log(`[FETCH] Kalshi: ${sportsSeries.length} fixture series found, fetching top ${capped.length}`);
 
   const allMarkets = [];
-  // Fetch markets per series (limit to avoid excessive calls)
-  for (const series of sportsSeries.slice(0, 40)) {
-    const data = run(`kalshi get_markets --series_ticker=${series.ticker} --status=open`);
-    if (data?.markets?.length) {
-      for (const m of data.markets) {
-        m._series = series;
-      }
-      allMarkets.push(...data.markets);
-    }
+  // Fetch in parallel batches of 10
+  for (let i = 0; i < capped.length; i += 10) {
+    const batch = capped.slice(i, i + 10);
+    const results = await Promise.all(batch.map(series => {
+      return new Promise(resolve => {
+        const data = run(`kalshi get_markets --series_ticker=${series.ticker} --status=open`);
+        if (data?.markets?.length) {
+          for (const m of data.markets) m._series = series;
+          resolve(data.markets);
+        } else {
+          resolve([]);
+        }
+      });
+    }));
+    for (const markets of results) allMarkets.push(...markets);
   }
 
-  console.log(`[FETCH] Kalshi: ${allMarkets.length} total markets`);
-  return allMarkets;
+  // Filter to upcoming fixtures only
+  const now = new Date();
+  const fixtures = allMarkets.filter(m => {
+    const close = new Date(m.expected_expiration_time || m.close_time);
+    return close > now;
+  });
+
+  console.log(`[FETCH] Kalshi: ${fixtures.length} upcoming fixtures (from ${allMarkets.length} total)`);
+  return fixtures;
 }
 
 module.exports = { fetchPolymarketMarkets, fetchKalshiSportsMarkets, fetchPolymarketOrderBook };
