@@ -35,7 +35,7 @@ addTeam('chicago bulls', 'chi', 'chicago bulls', 'bulls');
 addTeam('atlanta hawks', 'atl', 'atlanta hawks', 'hawks');
 addTeam('toronto raptors', 'tor', 'toronto raptors', 'raptors');
 addTeam('brooklyn nets', 'bkn', 'brooklyn', 'nets');
-addTeam('houston rockets', 'hou', 'houston rockets', 'rockets');
+addTeam('houston rockets', 'hou', 'houston', 'rockets');
 addTeam('memphis grizzlies', 'mem', 'memphis', 'grizzlies');
 addTeam('san antonio spurs', 'sas', 'san antonio', 'spurs');
 addTeam('portland trail blazers', 'por', 'portland', 'blazers', 'trail blazers');
@@ -219,10 +219,17 @@ function detectLeague(text, tags) {
 
 function detectMarketType(text) {
   const lower = text.toLowerCase();
-  if (lower.includes('spread') || lower.includes('handicap')) return 'spread';
-  if (lower.includes('total') || lower.includes('o/u') || lower.includes('over') || lower.includes('under')) return 'total';
+  // Check half/quarter first (before total/spread, since "first half total" should be first_half_total)
+  const isFirstHalf = lower.includes('1h ') || lower.includes('first half') || lower.includes('1st half');
+  const isTotal = lower.includes('total') || lower.includes('o/u') || lower.includes('over/under');
+  const isSpread = lower.includes('spread') || lower.includes('handicap');
+  
+  if (isFirstHalf && isTotal) return 'first_half_total';
+  if (isFirstHalf && isSpread) return 'first_half_spread';
+  if (isFirstHalf) return 'first_half_moneyline';
   if (lower.includes('btts') || lower.includes('both teams to score')) return 'btts';
-  if (lower.includes('1h ') || lower.includes('first half') || lower.includes('1st half')) return 'first_half';
+  if (isSpread) return 'spread';
+  if (isTotal) return 'total';
   if (lower.includes('draw')) return 'draw';
   return 'moneyline';
 }
@@ -230,24 +237,42 @@ function detectMarketType(text) {
 // ─── Team Extraction ────────────────────────────────────────────────────
 // This is the critical function — extract exactly which two teams are playing
 
+// Kalshi abbreviation patterns: "Los Angeles C" = Clippers, "Los Angeles L" = Lakers
+const KALSHI_ABBREV = {
+  'los angeles c': 'los angeles clippers', 'los angeles l': 'los angeles lakers',
+  'new york k': 'new york knicks', 'new york n': 'brooklyn nets',
+  'la c': 'los angeles clippers', 'la l': 'los angeles lakers',
+  'new york g': 'new york giants', 'new york j': 'new york jets',
+  'new york r': 'new york rangers', 'new york i': 'new york islanders',
+  'new york m': 'new york mets', 'new york y': 'new york yankees',
+  'chicago b': 'chicago bulls', 'chicago c': 'chicago cubs', 'chicago w': 'chicago white sox',
+};
+
 function resolveTeam(name) {
   const lower = name.toLowerCase()
     .replace(/\bfc\b/g, '').replace(/\bcf\b/g, '').replace(/\bsc\b/g, '')
     .replace(/[.()]/g, '').replace(/\s+/g, ' ').trim();
   
+  // Check Kalshi abbreviation patterns first
+  if (KALSHI_ABBREV[lower]) {
+    const full = KALSHI_ABBREV[lower];
+    if (TEAM_MAP[full]) return TEAM_MAP[full];
+  }
+  
   // Direct lookup
   if (TEAM_MAP[lower]) return TEAM_MAP[lower];
   
-  // Try progressively shorter prefixes (for "Los Angeles C" matching "Los Angeles Clippers")
+  // Try progressively shorter prefixes (for "Los Angeles C" matching "Los Angeles Clippers")  
   const words = lower.split(' ');
-  for (let len = words.length; len >= 1; len--) {
+  for (let len = words.length; len >= 2; len--) {
     const prefix = words.slice(0, len).join(' ');
     if (TEAM_MAP[prefix]) return TEAM_MAP[prefix];
   }
   
   // Try each word as a standalone (for nicknames like "Nuggets", "Arsenal")
+  // But only for longer words to avoid false matches
   for (const word of words) {
-    if (word.length >= 4 && TEAM_MAP[word]) return TEAM_MAP[word];
+    if (word.length >= 5 && TEAM_MAP[word]) return TEAM_MAP[word];
   }
   
   return lower; // Return cleaned name as-is for unknown teams
@@ -260,7 +285,9 @@ function extractFixtureTeams(text) {
   // Also: "Team A vs. Team B: O/U 225.5" (with suffix)
   
   const cleaned = text
-    .replace(/:\s*(O\/U|Over|Under|Total|Spread|Both Teams|1H|First Half|Moneyline).*$/i, '') // Remove market type suffix
+    .replace(/:\s*(O\/U|Over|Under|Total|Spread|Both Teams|1H|First Half|Moneyline|Winner|Score|Points|Goal).*$/i, '') // Remove market type suffix
+    .replace(/:\s*First Half.*$/i, '') // Kalshi "First Half Total?" suffix
+    .replace(/\?\s*$/g, '') // Remove trailing ?
     .replace(/\(\w+\)/g, '') // Remove (W), (M) etc
     .replace(/\s*[-–]\s*Map \d.*$/i, '') // Remove esports map info
     .replace(/\s*\(BO\d\).*$/i, '') // Remove best-of info
@@ -272,14 +299,8 @@ function extractFixtureTeams(text) {
     return [resolveTeam(match[1]), resolveTeam(match[2])];
   }
   
-  // Try "X at Y"
+  // Try "X at Y" (already cleaned of suffixes)
   match = cleaned.match(/^(.+?)\s+at\s+(.+?)$/i);
-  if (match) {
-    return [resolveTeam(match[1]), resolveTeam(match[2])];
-  }
-  
-  // Kalshi format: "Denver at Los Angeles C: Total Points"
-  match = cleaned.match(/^(.+?)\s+at\s+(.+?):/i);
   if (match) {
     return [resolveTeam(match[1]), resolveTeam(match[2])];
   }
@@ -387,8 +408,18 @@ function matchMarkets(polymarkets, kalshiMarkets) {
       // RULE 1: Must be exact same date
       if (pm.date !== km.date) continue;
       
-      // RULE 2: Must be same market type (moneyline vs moneyline, total vs total)
-      if (pm.marketType !== km.marketType) continue;
+      // RULE 2: Must be compatible market type
+      if (pm.marketType !== km.marketType) {
+        // Allow some compatible type matching
+        const compatible = (a, b) => {
+          if (a === b) return true;
+          // "first_half" (old format) matches "first_half_moneyline" or "first_half_total"
+          if (a === 'first_half' && b.startsWith('first_half')) return true;
+          if (b === 'first_half' && a.startsWith('first_half')) return true;
+          return false;
+        };
+        if (!compatible(pm.marketType, km.marketType)) continue;
+      }
       
       // RULE 3: Both teams must match
       const pmTeams = new Set(pm.teams);

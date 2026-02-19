@@ -111,18 +111,35 @@ function fetchPolymarketOrderBook(tokenId) {
 }
 
 // ─── Kalshi ─────────────────────────────────────────────────────────────
-// Kalshi game/fixture series only — excludes futures, awards, season totals
+// Kalshi game/fixture series — must be individual game markets
 const KALSHI_FIXTURE_TICKERS = [
-  'KXNCAAMBGAME', 'KXNCAAWBGAME', // college basketball games
-  'KXUEFAGAME', 'KXBRASILEIROGAME', // soccer games
-  'KXNHLTOTAL', 'KXNHLGAME', // NHL games
-  'KXNBAGAME', 'KXNBAPLAYERGAME', // NBA games
-  'KXNFLGAME', 'KXNFLPLAYERGAME', // NFL games
-  'KXMLBGAME', // MLB games
-  'KXLALIGABTTS', 'KXEPLBTTS', 'KXSOCCERBTTS', // soccer BTTS
-  'KXUCL16', 'KXUEL16', // Champions/Europa League fixtures
-  'KXUFCFIGHT', // UFC fights
-  'KXFIBACHAMPLEAGUEGAME', // FIBA games
+  // NBA
+  'KXNBAGAME', 'KXNBATOTAL', 'KXNBASPREAD', 'KXNBA1HTOTAL', 'KXNBA1HSPREAD',
+  'KXNBA2HTOTAL', 'KXNBA2HSPREAD', 'KXNBA1HWINNER', 'KXNBA2HWINNER',
+  'KXNBA1QWINNER', 'KXNBA2QWINNER', 'KXNBA3QWINNER', 'KXNBA4QWINNER',
+  'KXNBA1QSPREAD', 'KXNBA2QSPREAD', 'KXNBA3QSPREAD', 'KXNBA4QSPREAD',
+  'KXNBA1QTOTAL', 'KXNBA2QTOTAL', 'KXNBA3QTOTAL', 'KXNBA4QTOTAL',
+  'KXNBATEAMTOTAL', 'KXNBAPTS', 'KXNBAAST', 'KXNBAREB', 'KXNBABLK', 'KXNBA3PT',
+  'KXNBAPRA', 'KXNBAPA', 'KXNBAPR', 'KXNBARA', 'KXNBA3D', 'KXNBA2D', 'KXNBASTL',
+  // NFL
+  'KXNFLGAME', 'KXNFLML',
+  // NHL
+  'KXNHLTOTAL', 'KXNHLGAME',
+  // MLB
+  'KXMLBGAME',
+  // College basketball
+  'KXNCAAMBGAME', 'KXNCAAMB1HTOTAL', 'KXNCAAWBGAME',
+  // Soccer
+  'KXUEFAGAME', 'KXUCLGAME', 'KXBRASILEIROGAME', 'KXBRASILEIROTOTAL', 'KXBRASILEIROSPREAD',
+  'KXLALIGABTTS', 'KXEPLBTTS', 'KXSOCCERBTTS', 'KXLIGUE1BTTS',
+  'KXEFLCHAMPIONSHIPGAME', 'KXBELGIANPLGAME', 'KXHNLGAME', 'KXLIIGAGAME',
+  'KXMLSGAME', 'KXALEAGUETOTAL',
+  // Other
+  'KXUFCFIGHT', 'KXFIBACHAMPLEAGUEGAME', 'KXSIXNATIONSMATCH',
+  'KXSHLGAME', 'KXNCAAHOCKEYGAME', 'KXRUGBYNRLMATCH',
+  'KXLOLGAME', 'KXCODGAME',
+  // WNBA
+  'KXWNBAGAME',
 ];
 
 async function fetchKalshiSportsMarkets() {
@@ -147,9 +164,12 @@ async function fetchKalshiSportsMarkets() {
     sportsSeries = KALSHI_FIXTURE_TICKERS.map(t => ({ ticker: t, tags: [] }));
   }
 
-  // Cap series and log
-  const capped = sportsSeries.slice(0, 50);
-  console.log(`[FETCH] Kalshi: ${sportsSeries.length} fixture series found, fetching top ${capped.length}`);
+  // Prioritize known fixture tickers, then discovered ones
+  const knownSet = new Set(KALSHI_FIXTURE_TICKERS);
+  const known = sportsSeries.filter(s => KALSHI_FIXTURE_TICKERS.some(t => s.ticker.startsWith(t)));
+  const discovered = sportsSeries.filter(s => !KALSHI_FIXTURE_TICKERS.some(t => s.ticker.startsWith(t)));
+  const capped = [...known, ...discovered].slice(0, 100);
+  console.log(`[FETCH] Kalshi: ${sportsSeries.length} fixture series found (${known.length} known + ${discovered.length} discovered), fetching top ${capped.length}`);
 
   const allMarkets = [];
   // Fetch in parallel batches of 10
