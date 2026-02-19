@@ -1,0 +1,21 @@
+{
+  "name": "cross-scanner",
+  "version": "1.0.0",
+  "description": "Real-time prediction market cross-platform arbitrage scanner",
+  "scripts": {
+    "dev": "concurrently \"npm run server:dev\" \"npm run client:dev\"",
+    "server:dev": "nodemon server/index.js",
+    "client:dev": "cd client && npx vite --port 3003",
+    "build": "cd client && npx vite build",
+    "start": "node server/index.js",
+    "setup": "npm install && cd client && npm install"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "nodemon": "^3.1.0"
+  }
+}
