@@ -14,17 +14,98 @@ function run(cmd) {
 }
 
 // ─── Polymarket ─────────────────────────────────────────────────────────
+const https = require('https');
+
+function httpGet(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, { headers: { 'Accept': 'application/json' } }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch (e) { reject(e); }
+      });
+    }).on('error', reject);
+  });
+}
+
 async function fetchPolymarketMarkets() {
   const allMarkets = [];
-  // Fetch in batches
-  for (let offset = 0; offset < 500; offset += 100) {
-    const data = run(`polymarket get_sports_markets --limit=100 --offset=${offset}`);
-    if (!data?.markets?.length) break;
-    allMarkets.push(...data.markets);
-    if (data.markets.length < 100) break;
+  const GAMMA = 'https://gamma-api.polymarket.com/markets';
+  const types = ['moneyline', 'spreads', 'totals', 'both_teams_to_score', 'first_half_moneyline', 'first_half_spreads', 'first_half_totals'];
+
+  // Fetch fixture markets by type, sorted by end date (upcoming first)
+  for (const type of types) {
+    try {
+      const url = `${GAMMA}?limit=100&active=true&closed=false&sports_market_types=${type}&order=endDate&ascending=false`;
+      const markets = await httpGet(url);
+      if (Array.isArray(markets)) {
+        // Normalize gamma API format to match sports-skills format
+        for (const m of markets) {
+          allMarkets.push({
+            id: m.id,
+            question: m.question,
+            description: m.description || '',
+            slug: m.slug,
+            status: 'active',
+            outcomes: parseOutcomes(m),
+            volume: parseFloat(m.volume) || 0,
+            volume_24h: parseFloat(m.volume24hr) || 0,
+            liquidity: parseFloat(m.liquidity) || 0,
+            start_date: m.startDate,
+            end_date: m.endDate,
+            sports_market_type: m.sportsMarketType || type,
+            game_id: m.events?.[0]?.gameId || '',
+            clob_token_ids: parseJsonField(m.clobTokenIds),
+            tags: [],
+          });
+        }
+      }
+    } catch (e) {
+      console.error(`[FETCH] Polymarket ${type} failed:`, e.message);
+    }
   }
-  console.log(`[FETCH] Polymarket: ${allMarkets.length} markets`);
-  return allMarkets;
+
+  // Also fetch via sports-skills for any we might have missed (futures, props)
+  const data = run('polymarket get_sports_markets --limit=100');
+  if (data?.markets) {
+    const existingIds = new Set(allMarkets.map(m => m.id));
+    for (const m of data.markets) {
+      if (!existingIds.has(m.id)) allMarkets.push(m);
+    }
+  }
+
+  // Deduplicate by id
+  const seen = new Set();
+  const deduped = allMarkets.filter(m => {
+    if (seen.has(m.id)) return false;
+    seen.add(m.id);
+    return true;
+  });
+
+  console.log(`[FETCH] Polymarket: ${deduped.length} markets (${types.length} fixture types + fallback)`);
+  return deduped;
+}
+
+function parseOutcomes(m) {
+  try {
+    const names = JSON.parse(m.outcomes || '[]');
+    const prices = JSON.parse(m.outcomePrices || '[]');
+    const tokenIds = parseJsonField(m.clobTokenIds);
+    return names.map((name, i) => ({
+      name,
+      price: parseFloat(prices[i]) || 0,
+      clob_token_id: tokenIds[i] || '',
+    }));
+  } catch { return []; }
+}
+
+function parseJsonField(val) {
+  if (Array.isArray(val)) return val;
+  if (typeof val === 'string') {
+    try { return JSON.parse(val); } catch { return []; }
+  }
+  return [];
 }
 
 function fetchPolymarketOrderBook(tokenId) {
