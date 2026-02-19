@@ -85,13 +85,17 @@ function calculateArb(polymarket, kalshi) {
 
   if (!strategies.length) return null;
 
+  // Filter out likely mismatches — arbs over 50% are almost certainly wrong pairings
+  const plausible = strategies.filter(s => s.percentage <= 50);
+  if (!plausible.length) return null;
+
   // Return best strategy
-  const best = strategies.sort((a, b) => b.percentage - a.percentage)[0];
+  const best = plausible.sort((a, b) => b.percentage - a.percentage)[0];
   return {
     exists: best.percentage >= 0.5,
     percentage: Math.round(best.percentage * 100) / 100,
     best,
-    allStrategies: strategies.filter(s => s.percentage >= 0.5),
+    allStrategies: plausible.filter(s => s.percentage >= 0.5),
     maxSize: Math.min(polymarket.liquidity || 0, kalshi.openInterest || 0),
   };
 }

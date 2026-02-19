@@ -3,7 +3,7 @@ const { execSync } = require('child_process');
 
 function run(cmd) {
   try {
-    const out = execSync(`sports-skills ${cmd}`, { encoding: 'utf8', timeout: 30000 });
+    const out = execSync(`sports-skills ${cmd}`, { encoding: 'utf8', timeout: 30000, maxBuffer: 50 * 1024 * 1024 });
     const parsed = JSON.parse(out);
     if (!parsed.status) return null;
     return parsed.data;
@@ -32,19 +32,35 @@ function fetchPolymarketOrderBook(tokenId) {
 }
 
 // ─── Kalshi ─────────────────────────────────────────────────────────────
-async function fetchKalshiSportsMarkets() {
-  const seriesData = run('kalshi get_series_list');
-  if (!seriesData?.series) return [];
+// Known Kalshi sports series prefixes — faster than listing all series
+const KALSHI_SPORTS_TICKERS = [
+  'KXNBA', 'KXNFL', 'KXMLB', 'KXNHL', 'KXCBB', 'KXWNBA',
+  'KXEPL', 'KXLALIGA', 'KXSOCCER', 'KXMLS', 'KXUCL', 'KXBUNDESLIGA', 'KXSERIEA', 'KXLIGUE1',
+  'KXTENNIS', 'KXUFC', 'KXGOLF', 'KXPGA', 'KXNASCAR', 'KXF1',
+  'KXLALIGABTTS', 'KXEPLBTTS', 'KXSOCCERBTTS',
+];
 
-  // Filter to sports series
-  const sportsSeries = seriesData.series.filter(s =>
-    s.category === 'Sports' || (s.tags && s.tags.some(t => ['Soccer', 'Basketball', 'Football', 'Baseball', 'Hockey', 'Tennis', 'MMA', 'Golf', 'Racing'].includes(t)))
-  );
+async function fetchKalshiSportsMarkets() {
+  // First discover actual series
+  const seriesData = run('kalshi get_series_list');
+  let sportsSeries = [];
+
+  if (seriesData?.series) {
+    sportsSeries = seriesData.series.filter(s =>
+      s.category === 'Sports' ||
+      (s.tags && s.tags.some(t => ['Soccer', 'Basketball', 'Football', 'Baseball', 'Hockey', 'Tennis', 'MMA', 'Golf', 'Racing'].includes(t))) ||
+      KALSHI_SPORTS_TICKERS.some(prefix => s.ticker.startsWith(prefix))
+    );
+  } else {
+    // Fallback: try known tickers directly
+    sportsSeries = KALSHI_SPORTS_TICKERS.map(t => ({ ticker: t, tags: [] }));
+  }
 
   console.log(`[FETCH] Kalshi: ${sportsSeries.length} sports series found`);
 
   const allMarkets = [];
-  for (const series of sportsSeries) {
+  // Fetch markets per series (limit to avoid excessive calls)
+  for (const series of sportsSeries.slice(0, 40)) {
     const data = run(`kalshi get_markets --series_ticker=${series.ticker} --status=open`);
     if (data?.markets?.length) {
       for (const m of data.markets) {

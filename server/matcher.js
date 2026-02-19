@@ -268,8 +268,11 @@ function matchMarkets(polymarkets, kalshiMarkets) {
         if (wordOverlap < 2) continue;
       }
 
+      // Require at least 2 team overlap or strong word overlap for a match
+      if (overlap < 1) continue;
+
       const score = overlap * 10 + (pm.league === km.league ? 5 : 0);
-      if (score > bestScore) {
+      if (score > bestScore && score >= 10) {
         bestScore = score;
         bestMatch = { index: i, market: km };
       }
